@@ -2,6 +2,7 @@ import zipfile
 import tempfile
 from pathlib import Path
 import time
+import logging
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,156 @@ from shapely.wkt import dumps
 
 pd.set_option("display.max_info_columns", 100)
 pd.set_option("display.max_info_rows", 100)
+
+
+# =========================================================
+# ЛОГИРОВАНИЕ И ВАЛИДАЦИЯ
+# =========================================================
+
+def setup_logging(log_file: str = "update_poi.log") -> logging.Logger:
+    """
+    Настраивает логирование в консоль и файл.
+    """
+    logger = logging.getLogger("update_poi")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.propagate = False
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    return logger
+
+
+logger = setup_logging()
+
+
+def require_columns(df: pd.DataFrame, df_name: str, required_columns: list[str]) -> None:
+    """
+    Проверяет наличие обязательных колонок в DataFrame.
+    """
+    missing = sorted(set(required_columns) - set(df.columns))
+    if missing:
+        raise ValueError(
+            f"В таблице {df_name} отсутствуют обязательные колонки: {missing}"
+        )
+
+
+def warn_missing_columns(
+    df: pd.DataFrame,
+    df_name: str,
+    columns: list[str],
+    log: logging.Logger = logger
+) -> None:
+    """
+    Логирует предупреждение по отсутствующим необязательным колонкам.
+    """
+    missing = sorted(set(columns) - set(df.columns))
+    if missing:
+        log.warning(
+            "В таблице %s отсутствуют необязательные колонки: %s",
+            df_name,
+            missing
+        )
+
+
+def validate_input_columns(
+    df_msh: pd.DataFrame,
+    df_pos: pd.DataFrame,
+    df_poi: pd.DataFrame,
+    df_reg: pd.DataFrame,
+    df_cat: pd.DataFrame,
+    log: logging.Logger = logger
+) -> None:
+    """
+    Проверяет схемы входных таблиц до начала обработки.
+    """
+    required_msh_columns = [
+        "REGION_NAME", "REPORT_DATE", "ADMIN_REGION_ID", "LOC_ID_4",
+        "MARKET_SUBS_ADM", "MSH_HOME_ADM", "HOME_SUBS_ADM",
+        "MSH_WORK_ADM", "WORK_SUBS_ADM", "MSH_EXTRAIN_ADM",
+        "ENTRTAIN_SUBS_ADM", "MARKET_SHARE_PREV_ADM",
+        "SUBS_CNT_PREV_ADM", "MARKET_SUBS_LOC_4", "MSH_HOME_LOC_4",
+        "HOME_SUBS_LOC_4", "MSH_WORK_LOC_4", "WORK_SUBS_LOC_4",
+        "MSH_EXTRAIN_LOC_4", "ENTRTAIN_SUBS_LOC_4",
+        "MARKET_SHARE_LOC_4", "SUBS_CNT_PREV_LOC_4"
+    ]
+    required_pos_columns = [
+        "POS_STATUS_ID", "REGION_NAME", "REPORT_MONTH", "LON", "LAT",
+        "POS_ID", "FLAG_GI_90", "SCH_DIC", "GI_CNT_90"
+    ]
+    required_poi_columns = [
+        "REGION_NAME_POI", "REGION_NAME_EDW", "LOCATION_ID",
+        "ADMIN_REGION_ID", "LON", "LAT", "TAG", "DIST_M",
+        "DEEP_INDOOR", "IN_CAR", "INDOOR", "OUTDOOR",
+        "MGF_MSH", "BIL_MSH", "T2_MSH", "OTH_MSH", "MTS_MSH",
+        "MGF_MSH_NEIB", "BIL_MSH_NEIB", "T2_MSH_NEIB",
+        "OTH_MSH_NEIB", "MTS_MSH_NEIB"
+    ]
+    optional_poi_columns = [
+        "OSM_ID", "POINT_NAME", "DATE_ADD", "ADDRESS", "ADMIN_REGION_NAME",
+        "LOCATION_NAME", "MASTERSITE",
+        "FLAG_MALL", "OFFICE_FLAG", "T2_SCORING_QUAL", "MTS_SCORING_QUAL",
+        "MEGAFON_SCORING_QUAL", "BEELINE_SCORING_QUAL", "TILE_ID",
+        "NEIGHBOR_TILE_IDS", "MAX_DATE_POTENCIAL", "LEVEL_MSC"
+    ]
+    required_reg_columns = [
+        "MACROREGION_ID", "FLAG", "POI", "EDW", "FILE_NAME",
+        "OPERATION_MR_FOLDER"
+    ]
+    required_cat_columns = ["category_en", "category_ru"]
+
+    require_columns(df_msh, "MSH.txt", required_msh_columns)
+    require_columns(df_pos, "POS.txt", required_pos_columns)
+    require_columns(df_poi, "POI.txt", required_poi_columns)
+    require_columns(df_reg, "DICTIONARY.xlsx", required_reg_columns)
+    require_columns(df_cat, "CATEGORRY_MAPPING.xlsx", required_cat_columns)
+    warn_missing_columns(df_poi, "POI.txt", optional_poi_columns, log=log)
+    log.info("Проверка входных колонок завершена успешно")
+
+
+def count_invalid_coordinates(
+    df: pd.DataFrame,
+    lon_col: str = "LON",
+    lat_col: str = "LAT"
+) -> int:
+    """
+    Считает строки с пустыми или некорректными координатами.
+    """
+    lon = to_numeric_series(df[lon_col])
+    lat = to_numeric_series(df[lat_col])
+    return int((lon.isna() | lat.isna()).sum())
+
+
+def log_summary(log: logging.Logger, stats: dict) -> None:
+    """
+    Пишет итоговую статистику запуска.
+    """
+    log.info("=" * 60)
+    log.info("ИТОГИ ЗАПУСКА")
+    log.info("MSH прочитано: %s", stats.get("msh_read", 0))
+    log.info("MSH после фильтрации: %s", stats.get("msh_filtered", 0))
+    log.info("POS прочитано: %s", stats.get("pos_read", 0))
+    log.info("POS после фильтрации: %s", stats.get("pos_filtered", 0))
+    log.info("POI прочитано: %s", stats.get("poi_read", 0))
+    log.info("POI после фильтрации: %s", stats.get("poi_filtered", 0))
+    log.info("POI без валидных координат: %s", stats.get("poi_invalid_coordinates", 0))
+    log.info("POS без валидных координат: %s", stats.get("pos_invalid_coordinates", 0))
+    log.info("POI выгружено в TXT: %s", stats.get("poi_exported_txt", 0))
+    log.info("POS выгружено в TXT: %s", stats.get("pos_exported_txt", 0))
+    log.info("KMZ файлов создано: %s", stats.get("kmz_files_saved", 0))
+    log.info("=" * 60)
 
 
 # =========================================================
@@ -443,7 +594,7 @@ def kml_polygons_from_zip(path_poi_circle: str, wanted_files) -> gpd.GeoDataFram
         missing = sorted(wanted_set - existing)
 
         if missing:
-            print("⚠️ В архиве не найдены файлы:", ", ".join(missing))
+            logger.warning("В архиве не найдены файлы: %s", ", ".join(missing))
 
         for base_name in sorted(existing):
             member = name_in_zip_by_basename[base_name]
@@ -455,7 +606,7 @@ def kml_polygons_from_zip(path_poi_circle: str, wanted_files) -> gpd.GeoDataFram
             try:
                 gdf = gpd.read_file(str(extract_path), driver="KML")
             except Exception as e:
-                print(f"❌ Ошибка чтения {base_name}: {e}")
+                logger.exception("Ошибка чтения %s", base_name)
                 continue
 
             if gdf.empty:
@@ -909,7 +1060,11 @@ def build_excel_dataset(
 # ОСНОВНОЙ PIPELINE
 # =========================================================
 
+stats = {}
+logger.info("Старт обновления POI. macro_id=%s", macro_id)
+
 try:
+    logger.info("Чтение входных файлов")
     df_msh, df_pos, df_poi, df_reg, df_cat = load_input_data(
         path_msh=path_msh,
         path_pos=path_pos,
@@ -919,8 +1074,29 @@ try:
         sheet_name_reg=sheet_name_reg,
         sheet_name_cat=sheet_name_cat
     )
-except Exception as e:
-    print(f"Ошибка при чтении файла: {e}")
+
+    stats["msh_read"] = len(df_msh)
+    stats["pos_read"] = len(df_pos)
+    stats["poi_read"] = len(df_poi)
+    stats["reg_read"] = len(df_reg)
+    stats["cat_read"] = len(df_cat)
+
+    logger.info("MSH прочитано строк: %s", stats["msh_read"])
+    logger.info("POS прочитано строк: %s", stats["pos_read"])
+    logger.info("POI прочитано строк: %s", stats["poi_read"])
+    logger.info("DICTIONARY прочитано строк: %s", stats["reg_read"])
+    logger.info("CATEGORY_MAPPING прочитано строк: %s", stats["cat_read"])
+
+    validate_input_columns(
+        df_msh=df_msh,
+        df_pos=df_pos,
+        df_poi=df_poi,
+        df_reg=df_reg,
+        df_cat=df_cat,
+        log=logger
+    )
+except Exception:
+    logger.exception("Ошибка при чтении или валидации входных файлов")
     raise SystemExit(1)
 
 df_reg_filtered = filter_reference_regions(df_reg, macro_id)
@@ -932,6 +1108,13 @@ df_msh_filtered, df_pos_filtered, df_poi_filtered, df_reg_filtered_file = prepar
     df_reg_filtered=df_reg_filtered
 )
 
+stats["msh_filtered"] = len(df_msh_filtered)
+stats["pos_filtered"] = len(df_pos_filtered)
+stats["poi_filtered"] = len(df_poi_filtered)
+logger.info("MSH после фильтрации: %s", stats["msh_filtered"])
+logger.info("POS после фильтрации: %s", stats["pos_filtered"])
+logger.info("POI после фильтрации: %s", stats["poi_filtered"])
+
 df_msh_adm = prepare_msh_admin(df_msh_filtered)
 df_msh_loc = prepare_msh_location(df_msh_filtered)
 
@@ -940,6 +1123,11 @@ df_poi_loc_adm = enrich_poi_with_msh(
     df_msh_loc=df_msh_loc,
     df_msh_adm=df_msh_adm
 )
+
+stats["poi_invalid_coordinates"] = count_invalid_coordinates(df_poi_loc_adm)
+stats["pos_invalid_coordinates"] = count_invalid_coordinates(df_pos_filtered)
+logger.warning("POI без валидных координат: %s", stats["poi_invalid_coordinates"])
+logger.warning("POS без валидных координат: %s", stats["pos_invalid_coordinates"])
 
 gdf_msh_poi_pos = build_poi_pos_metrics(
     df_poi_loc_adm=df_poi_loc_adm,
@@ -1025,8 +1213,10 @@ def export_txt_and_refresh_excel_sources(
         index=False
     )
 
-    print(f"Файл POI выгружен: {output_path_poi}")
-    print(f"Файл POS выгружен: {output_path_pos}")
+    logger.info("Файл POI выгружен: %s", output_path_poi)
+    logger.info("Файл POS выгружен: %s", output_path_pos)
+    logger.info("Строк выгружено в POI.txt: %s", len(gdf_msh_poi_pos_excel))
+    logger.info("Строк выгружено в POS.txt: %s", len(df_pos_filtered))
 
     if not output_path_poi_pos_excel.exists():
         raise FileNotFoundError(f"Excel-файл не найден: {output_path_poi_pos_excel}")
@@ -1064,7 +1254,7 @@ def export_txt_and_refresh_excel_sources(
 
         wb.Save()
 
-        print(f"Excel-файл обновлен: {output_path_poi_pos_excel}")
+        logger.info("Excel-файл обновлен: %s", output_path_poi_pos_excel)
 
     finally:
         if wb is not None:
@@ -1084,6 +1274,9 @@ def export_txt_and_refresh_excel_sources(
         str(output_path_pos),
         str(output_path_poi_pos_excel)
     )
+
+stats["poi_exported_txt"] = len(gdf_msh_poi_pos_excel)
+stats["pos_exported_txt"] = len(df_pos_filtered)
 
 output_path_poi, output_path_pos, output_path_poi_pos_excel = export_txt_and_refresh_excel_sources(
     gdf_msh_poi_pos_excel=gdf_msh_poi_pos_excel,
@@ -1782,7 +1975,7 @@ def add_poi_layer(kml, df_poi, config):
             point.description = build_poi_description(row)
 
         except Exception as e:
-            print(f"Ошибка при обработке POI OSM_ID={row.get('OSM_ID', 'UNKNOWN')}: {e}")
+            logger.exception("Ошибка при обработке POI OSM_ID=%s", row.get('OSM_ID', 'UNKNOWN'))
             continue
 
 
@@ -1835,7 +2028,7 @@ def add_pos_layer(kml, df_pos, config):
             point.description = build_pos_description(row)
 
         except Exception as e:
-            print(f"Ошибка при обработке POS_ID={row.get('POS_ID', 'UNKNOWN')}: {e}")
+            logger.exception("Ошибка при обработке POS_ID=%s", row.get('POS_ID', 'UNKNOWN'))
             continue
 
 
@@ -1928,7 +2121,7 @@ def make_combined_kmz(df_poi=None, df_pos=None, config=None):
             legend_png_path=temp_legend_path
         )
 
-        print(f"Готово. Файл сохранен: {output_path}")
+        logger.info("Готово. Файл сохранен: %s", output_path)
         return output_path
 
     finally:
@@ -1953,7 +2146,7 @@ def export_region_kmz_files(
     base_config=None
 ):
     if df_poi is None or df_poi.empty:
-        print("df_poi пустой, выгрузка KMZ не выполнена.")
+        logger.warning("df_poi пустой, выгрузка KMZ не выполнена.")
         return []
 
     if "REGION_NAME_EDW" not in df_poi.columns:
@@ -1986,6 +2179,7 @@ def export_region_kmz_files(
         .tolist()
     )
 
+    logger.info("Регионов для KMZ: %s", len(region_list))
     saved_files = []
 
     for region_name in region_list:
@@ -2024,7 +2218,13 @@ def export_region_kmz_files(
         )
 
         saved_files.append(output_path)
-        print(f"Выгружен KMZ по региону: {region_name} -> {output_path}")
+        logger.info(
+            "Выгружен KMZ по региону: %s -> %s; POI=%s; POS=%s",
+            region_name,
+            output_path,
+            len(df_poi_region),
+            0 if df_pos_region is None else len(df_pos_region)
+        )
 
     return saved_files
 
@@ -2038,3 +2238,6 @@ saved_kmz_files = export_region_kmz_files(
     file_kml_ext=file_kml_ext,
     base_config=DEFAULT_KML_CONFIG
 )
+
+stats["kmz_files_saved"] = len(saved_kmz_files)
+log_summary(logger, stats)
