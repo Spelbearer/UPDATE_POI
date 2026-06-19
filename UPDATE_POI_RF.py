@@ -751,7 +751,7 @@ def add_polygon_counts(
 
     Возвращает:
     - gdf_poi с колонкой polygon_count
-    - gdf_polygon_circle с полигонами
+    - gdf_polygon_circle с полигонами и количеством POI внутри каждого полигона
     """
     gdf_out = kml_polygons_from_zip(path_poi_circle, reg_files)
     gdf_polygon_circle = gdf_out[["ID", "MULTIPOLYGON_WKT", "source_file", "geometry"]].copy()
@@ -759,21 +759,35 @@ def add_polygon_counts(
     if gdf_polygon_circle.empty:
         gdf_poi = gdf_poi.copy()
         gdf_poi["polygon_count"] = 0
+        gdf_polygon_circle["poi_count"] = pd.Series(dtype="int64")
         return gdf_poi, gdf_polygon_circle
 
-    sindex = gdf_polygon_circle.sindex
+    polygon_sindex = gdf_polygon_circle.sindex
 
     def count_polygons_containing_point(point):
         if point is None or point.is_empty:
             return 0
 
-        possible_idx = list(sindex.intersection(point.bounds))
+        possible_idx = list(polygon_sindex.intersection(point.bounds))
         possible = gdf_polygon_circle.iloc[possible_idx]
 
         return possible["geometry"].covers(point).sum()
 
     gdf_poi = gdf_poi.copy()
     gdf_poi["polygon_count"] = gdf_poi["geometry"].apply(count_polygons_containing_point)
+
+    poi_sindex = gdf_poi.sindex
+
+    def count_poi_in_polygon(polygon):
+        if polygon is None or polygon.is_empty:
+            return 0
+
+        possible_idx = list(poi_sindex.intersection(polygon.bounds))
+        possible = gdf_poi.iloc[possible_idx]
+
+        return sum(1 for point in possible["geometry"] if polygon.covers(point))
+
+    gdf_polygon_circle["poi_count"] = gdf_polygon_circle["geometry"].apply(count_poi_in_polygon)
 
     return gdf_poi, gdf_polygon_circle
 
@@ -1330,7 +1344,7 @@ DEFAULT_KML_CONFIG = {
     # ----- Названия папок -----
     "poi_folder_name": "POI",
     "pos_root_folder_name": "POS",
-    "polygon_folder_name": "Полигоны",
+    "polygon_folder_name": "Полигоны скопления POI >5",
     "pos_sell_folder_name": "Продающие",
     "pos_not_sell_folder_name": "Не продающие",
 
@@ -1989,13 +2003,13 @@ def add_poi_layer(kml, df_poi, config):
 
 
 def build_polygon_description(row):
-    source_file = get_row_value(row, "source_file")
     region_name = get_row_value(row, "REGION_NAME_EDW")
+    poi_count = get_row_value(row, "poi_count")
 
     return (
-        f"<font size='4'><b>Полигон из OSM-выгрузки</b></font><br><br>"
+        f"<font size='4'><b>Полигон скопления POI</b></font><br><br>"
         f"Регион EDW: <b>{region_name}</b><br>"
-        f"Файл: <b>{source_file}</b><br>"
+        f"Количество POI в полигоне: <b>{poi_count}</b><br>"
     )
 
 
@@ -2013,8 +2027,9 @@ def add_polygon_layer(kml, df_polygons, config):
             if geom is None or geom.is_empty:
                 continue
 
+            polygon_name = get_row_value(row, "REGION_NAME_EDW") or get_row_value(row, "source_file")
             polygon = folder.newmultigeometry(
-                name=safe_str(get_row_value(row, "source_file"))
+                name=safe_str(polygon_name)
             )
             polygon.visibility = config.get("polygon_visibility", 1)
             polygon.style.linestyle.color = config["polygon_line_color"]
