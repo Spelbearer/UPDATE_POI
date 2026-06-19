@@ -785,7 +785,11 @@ def add_polygon_counts(
         possible_idx = list(poi_sindex.intersection(polygon.bounds))
         possible = gdf_poi.iloc[possible_idx]
 
+
+        return sum(1 for point in possible["geometry"] if polygon.covers(point))
+
         return int(possible["geometry"].apply(polygon.covers).sum())
+
 
     gdf_polygon_circle["poi_count"] = gdf_polygon_circle["geometry"].apply(count_poi_in_polygon)
 
