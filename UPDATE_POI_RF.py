@@ -2075,6 +2075,29 @@ def add_pos_layer(kml, df_pos, config):
     folder_not_sell.visibility = config.get("pos_root_visibility", 0)
     folder_not_sell.open = 0
 
+    channel_folders = {
+        True: {},
+        False: {}
+    }
+
+    def get_channel_folder(parent_folder, is_sell, channel_name):
+        """
+        Возвращает подпапку канала продаж внутри папки продающих/не продающих POS.
+
+        Итоговая структура слоя:
+        POS -> Продающие/Не продающие -> канал продаж -> сами точки.
+        """
+        channel_name = safe_str(channel_name).strip() or "UNKNOWN"
+        channel_key = channel_name.casefold()
+
+        if channel_key not in channel_folders[is_sell]:
+            folder = parent_folder.newfolder(name=channel_name)
+            folder.visibility = config.get("pos_root_visibility", 0)
+            folder.open = 0
+            channel_folders[is_sell][channel_key] = folder
+
+        return channel_folders[is_sell][channel_key]
+
     for _, row in df_pos.iterrows():
         try:
             lat = get_row_float(row, "LAT")
@@ -2087,7 +2110,12 @@ def add_pos_layer(kml, df_pos, config):
             flag_gi_90 = get_row_float(row, "FLAG_GI_90")
             is_sell = int(flag_gi_90 or 0) == 1
 
-            target_folder = folder_sell if is_sell else folder_not_sell
+            parent_folder = folder_sell if is_sell else folder_not_sell
+            target_folder = get_channel_folder(
+                parent_folder=parent_folder,
+                is_sell=is_sell,
+                channel_name=get_row_value(row, "SCH_DIC", "UNKNOWN")
+            )
 
             point_name = config["pos_name_template"].format(POS_ID=pos_id)
 
