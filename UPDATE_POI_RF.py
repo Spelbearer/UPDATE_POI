@@ -23,9 +23,12 @@ pd.set_option("display.max_info_rows", 100)
 # ЛОГИРОВАНИЕ И ВАЛИДАЦИЯ
 # =========================================================
 
-def setup_logging(log_file: str = "update_poi.log") -> logging.Logger:
+def setup_logging() -> logging.Logger:
     """
-    Настраивает логирование в консоль и файл.
+    Настраивает логирование только в консоль.
+
+    Логи не записываются в файл на локальном компьютере, чтобы запуск
+    скрипта не создавал служебные файлы в пользовательских папках.
     """
     logger = logging.getLogger("update_poi")
     logger.setLevel(logging.INFO)
@@ -40,14 +43,22 @@ def setup_logging(log_file: str = "update_poi.log") -> logging.Logger:
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
 
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setFormatter(formatter)
-
     logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
 
     return logger
 
+
+
+def normalize_input_path(value: str, default: str) -> str:
+    """
+    Возвращает путь для сохранения из введенной пользователем ссылки.
+
+    Если пользователь ничего не ввел, используется путь по умолчанию.
+    Введенный путь очищается от пробелов и кавычек, чтобы можно было
+    вставлять ссылку/UNC-путь напрямую из буфера обмена.
+    """
+    value = str(value or "").strip().strip('"').strip("'")
+    return value or default
 
 logger = setup_logging()
 
@@ -187,7 +198,11 @@ path_poi = r"\\corp.tele2.ru\msfolders\Operational Finance\МРР\ПАЗЛ\BI_о
 path_reg = r"\\corp.tele2.ru\msfolders\Operational Finance\МРР\ПАЗЛ\BI_обновление\Скрипты_для_обновления\обновленные_скрипты\Обновленеи_MSH_POI\Новое обноление\Исходники\DICTIONARY.xlsx"
 path_cat = r"\\corp.tele2.ru\msfolders\Operational Finance\МРР\ПАЗЛ\BI_обновление\Скрипты_для_обновления\обновленные_скрипты\Обновленеи_MSH_POI\Новое обноление\Исходники\CATEGORRY_MAPPING.xlsx"
 path_poi_circle = r"\\corp.tele2.ru\operations_MR\Operations_All\Потенциал_рынка\Данные_из_OSM_по_интересующим_тегам_Выгрузка_на_2026_05_03_с_poi.zip"
-path_oper_mr = r'\\corp.tele2.ru\operations_MR'
+default_path_oper_mr = r'\\corp.tele2.ru\operations_MR'
+path_oper_mr = normalize_input_path(
+    input(f"Введите ссылку/путь для сохранения результатов [{default_path_oper_mr}]: "),
+    default_path_oper_mr
+)
 
 folder_out = r'Адресная_программа_POI'
 folder_txt_out = r'Исходники'
