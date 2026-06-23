@@ -994,6 +994,31 @@ def fill_zero_columns(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return out
 
 
+def add_poi_category_ru(
+    df: pd.DataFrame,
+    df_cat: pd.DataFrame,
+    tag_col: str = "TAG",
+    output_col: str = "Категория RU"
+) -> pd.DataFrame:
+    """
+    Добавляет русское название категории POI по колонке TAG.
+
+    Используется и для Excel, и для KMZ, чтобы категория отображалась
+    в описании точки даже после удаления технической колонки TAG.
+    """
+    out = df.copy()
+
+    if tag_col not in out.columns:
+        out[output_col] = "Неизвестная категория"
+        return out
+
+    category_map = df_cat.set_index("category_en")["category_ru"]
+    out[output_col] = out[tag_col].map(category_map)
+    out[output_col] = out[output_col].fillna("Неизвестная категория")
+
+    return out
+
+
 def build_excel_dataset(
     gdf_poi: gpd.GeoDataFrame,
     df_cat: pd.DataFrame
@@ -1005,10 +1030,7 @@ def build_excel_dataset(
     - добавляет флаги и производные признаки
     - удаляет ненужные колонки
     """
-    df = gdf_poi.copy()
-
-    df["Категория RU"] = df["TAG"].map(df_cat.set_index("category_en")["category_ru"])
-    df["Категория RU"] = df["Категория RU"].fillna("Неизвестная категория")
+    df = add_poi_category_ru(gdf_poi, df_cat)
 
     numeric_columns = [
         "HOME_SUBS_LOC_4",
@@ -1330,7 +1352,9 @@ output_path_poi, output_path_pos, output_path_poi_pos_excel = export_txt_and_ref
     sleep_seconds=2
 )
 
-df_msh_poi_pos_rename_kml = gdf_msh_poi_pos.drop([
+gdf_msh_poi_pos_kml = add_poi_category_ru(gdf_msh_poi_pos, df_cat)
+
+df_msh_poi_pos_rename_kml = gdf_msh_poi_pos_kml.drop([
     'MACROREGION_NAME',
     'REGION_NAME_POI',
     'LOCATION_ID',
