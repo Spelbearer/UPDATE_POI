@@ -2014,6 +2014,26 @@ def add_poi_layer(kml, df_poi, config):
         return
 
     folder = kml.newfolder(name=config["poi_folder_name"])
+    folder.open = 0
+
+    category_folders = {}
+
+    def get_category_folder(category_name):
+        """
+        Возвращает подпапку категории внутри слоя POI.
+
+        Итоговая структура слоя:
+        POI -> категория POI -> сами точки.
+        """
+        category_name = safe_str(category_name).strip() or "Неизвестная категория"
+        category_key = category_name.casefold()
+
+        if category_key not in category_folders:
+            category_folder = folder.newfolder(name=category_name)
+            category_folder.open = 0
+            category_folders[category_key] = category_folder
+
+        return category_folders[category_key]
 
     for _, row in df_poi.iterrows():
         try:
@@ -2026,7 +2046,11 @@ def add_poi_layer(kml, df_poi, config):
             osm_id = safe_str(get_row_value(row, "OSM_ID"))
             point_name = config["poi_name_template"].format(OSM_ID=osm_id)
 
-            point = folder.newpoint(
+            target_folder = get_category_folder(
+                get_row_value(row, "Категория RU", "Неизвестная категория")
+            )
+
+            point = target_folder.newpoint(
                 name=point_name,
                 coords=[(float(lon), float(lat))]
             )
